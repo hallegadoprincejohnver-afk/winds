@@ -139,7 +139,7 @@ async function block(res, sid, s, reason, risk) {
 
 async function verifyLinkvertise(hash) {
   if (!cfg.linkvertiseToken) return { ok: false, reason: 'linkvertise_token_not_configured' };
-  if (!/^[A-Za-z0-9]{64}$/.test(hash)) return { ok: false, reason: 'invalid_hash' };
+  if (!/^[a-fA-F0-9]{64}$/.test(hash)) return { ok: false, reason: 'invalid_hash' };
   try {
     const url =
       'https://publisher.linkvertise.com/api/v1/anti_bypassing?token=' +
