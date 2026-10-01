@@ -323,6 +323,89 @@ app.post('/v1/client/turnstile', async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/v1/relay/linkvertise', async (req, res) => {
+  if (!await limited(req, res, 'callback', cfg.callbackLimit, 60)) return;
+
+  const x = await loadSession(req);
+  if (!x.s || !x.ok) return res.status(403).send('Verification failed');
+
+  const s = x.s;
+  const relay = String(req.query.relay || '');
+  const stage = Number(req.query.stage || 0);
+
+  if (
+    s.provider !== 'linkvertise' ||
+    s.status !== 'pending' ||
+    !relay ||
+    relay !== String(s.flowId || '') ||
+    stage !== Number(s.step)
+  ) {
+    return block(res, x.sid, s, 'linkvertise_relay_mismatch', {
+      score: 100,
+      reasons: ['relay_session_mismatch']
+    });
+  }
+
+  if (!isLikelyBrowser(req)) {
+    return block(res, x.sid, s, 'non_browser_client', {
+      score: 100,
+      reasons: ['non_browser_client']
+    });
+  }
+
+  if (!s.telemetry) {
+    return block(res, x.sid, s, 'missing_client_integrity', {
+      score: 100,
+      reasons: ['missing_client_integrity']
+    });
+  }
+
+  const server = serverRisk(req);
+  const client = clientRisk(s.telemetry);
+  const d = decision({
+    providerVerified: true,
+    bindingOk: x.ok,
+    replay: false,
+    elapsedSeconds: (Date.now() - s.createdAt) / 1000,
+    minSeconds: s.minSeconds,
+    server,
+    client,
+    turnstileOk: true
+  });
+
+  if (!d.allow) return block(res, x.sid, s, d.reason, d);
+
+  const optionalHash = String(req.query.hash || '').trim();
+  if (optionalHash && cfg.linkvertiseToken) {
+    const pv = await verifyLinkvertise(optionalHash);
+    if (!pv.ok) {
+      return block(res, x.sid, s, 'linkvertise_provider_hash_rejected', {
+        allow: false,
+        reason: 'linkvertise_provider_hash_rejected',
+        score: 100,
+        reasons: ['linkvertise_provider_hash_rejected']
+      });
+    }
+  }
+
+  s.status = 'completed';
+  s.providerEvidence = {
+    gatewayRelay: true,
+    providerHashPresent: Boolean(optionalHash),
+    at: Date.now()
+  };
+  s.risk = d;
+
+  await setJson('ab:s:' + x.sid, s, cfg.clearanceTtl);
+  audit('linkvertise_gateway_verified', req, {
+    sid: x.sid.slice(0, 12),
+    step: s.step,
+    score: d.score
+  });
+
+  return redirectWithTicket(res, s, x.sid);
+});
+
 app.get('/v1/provider/linkvertise/complete', async (req, res) => {
   if (!await limited(req, res, 'callback', cfg.callbackLimit, 60)) return;
   const x = await loadSession(req);
