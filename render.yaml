@@ -1,0 +1,59 @@
+services:
+  - type: web
+    name: clear-antibypass-gateway
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: INTEGRATION_KEY
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: LINKVERTISE_ANTIBYPASS_TOKEN
+        sync: false
+      - key: LOOTLABS_POSTBACK_SECRET
+        sync: false
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: SESSION_TTL_SECONDS
+        value: "900"
+      - key: CLEARANCE_TTL_SECONDS
+        value: "45"
+      - key: MIN_CHECKPOINT_SECONDS
+        value: "2"
+      - key: BIND_IP
+        value: "true"
+      - key: BIND_USER_AGENT
+        value: "true"
+      - key: RATE_LIMIT_START
+        value: "10"
+      - key: RATE_LIMIT_CALLBACK
+        value: "30"
+      - key: RATE_LIMIT_CLIENT
+        value: "20"
+      - key: TURNSTILE_SITE_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      - key: TURNSTILE_HOSTNAME
+        sync: false
+      - key: TURNSTILE_ACTION
+        value: "clear-checkpoint"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: clear-antibypass-kv
+          property: connectionString
+
+  - type: keyvalue
+    name: clear-antibypass-kv
+    plan: free
+    region: singapore
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
