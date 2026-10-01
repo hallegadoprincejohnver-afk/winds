@@ -326,10 +326,10 @@ app.post('/v1/client/turnstile', async (req, res) => {
 app.get('/v1/relay/linkvertise', async (req, res) => {
   if (!await limited(req, res, 'callback', cfg.callbackLimit, 60)) return;
 
-  const x = await loadSession(req);
+  let x = await loadSession(req);
   if (!x.s || !x.ok) return res.status(403).send('Verification failed');
 
-  const s = x.s;
+  let s = x.s;
   const relay = String(req.query.relay || '');
   const stage = Number(req.query.stage || 0);
 
@@ -353,15 +353,47 @@ app.get('/v1/relay/linkvertise', async (req, res) => {
     });
   }
 
+  // The client telemetry request is sent immediately before navigating from
+  // the gateway page to Linkvertise. Slow/mobile connections can still have
+  // that request in flight when Linkvertise redirects back to this relay.
+  // Give it a short server-side grace window before treating it as missing.
   if (!s.telemetry) {
-    return block(res, x.sid, s, 'missing_client_integrity', {
-      score: 100,
-      reasons: ['missing_client_integrity']
-    });
+    for (let i = 0; i < 8 && !s.telemetry; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const latest = await loadSession(req);
+      if (latest.s && latest.ok && latest.s.status === 'pending') {
+        x = latest;
+        s = latest.s;
+      }
+    }
   }
 
   const server = serverRisk(req);
-  const client = clientRisk(s.telemetry);
+  const clientTelemetryReady = Boolean(s.telemetry);
+
+  // If telemetry is still unavailable after the grace window, only permit
+  // a genuine top-level cross-site browser navigation. Direct address-bar
+  // hits and non-navigation requests remain blocked.
+  if (!clientTelemetryReady) {
+    const fetchSite = req.get('sec-fetch-site') || '';
+    const fetchMode = req.get('sec-fetch-mode') || '';
+    const fetchDest = req.get('sec-fetch-dest') || '';
+    const accept = req.get('accept') || '';
+    const normalProviderNavigation =
+      fetchSite === 'cross-site' &&
+      fetchMode === 'navigate' &&
+      fetchDest === 'document' &&
+      /text\\/html/i.test(accept);
+
+    if (!normalProviderNavigation) {
+      return block(res, x.sid, s, 'missing_client_integrity', {
+        score: 100,
+        reasons: ['missing_client_integrity']
+      });
+    }
+  }
+
+  const client = clientRisk(s.telemetry || {});
   const d = decision({
     providerVerified: true,
     bindingOk: x.ok,
