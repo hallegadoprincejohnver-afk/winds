@@ -289,7 +289,15 @@ app.post('/v1/client/telemetry', async (req, res) => {
   await setJson('ab:s:' + x.sid, x.s, cfg.ttl);
   res.json({ ok: true });
 });
-app.post('/v1/client/hello', (req, res) => app._router?.handle(req, res, () => {}, '/v1/client/telemetry'));
+app.post('/v1/client/hello', async (req, res) => {
+  if (!await limited(req, res, 'client', cfg.clientLimit, 30)) return;
+  const x = await loadSession(req);
+  if (!x.s || !x.ok) return res.status(403).json({ ok: false });
+  x.s.telemetry = Object.assign({}, x.s.telemetry || {}, req.body || {}, { at: Date.now() });
+  x.s.serverRisk = serverRisk(req);
+  await setJson('ab:s:' + x.sid, x.s, cfg.ttl);
+  res.json({ ok: true });
+});
 app.post('/v1/client/heartbeat', async (req, res) => {
   const x = await loadSession(req);
   if (!x.s || !x.ok) return res.status(403).json({ ok: false });
