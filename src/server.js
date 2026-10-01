@@ -383,7 +383,7 @@ app.get('/v1/relay/linkvertise', async (req, res) => {
       fetchSite === 'cross-site' &&
       fetchMode === 'navigate' &&
       fetchDest === 'document' &&
-      /text\\/html/i.test(accept);
+      accept.toLowerCase().includes('text/html');
 
     if (!normalProviderNavigation) {
       return block(res, x.sid, s, 'missing_client_integrity', {
