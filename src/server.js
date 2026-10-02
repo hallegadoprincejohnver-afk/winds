@@ -211,7 +211,11 @@ app.post('/v1/session/start', auth, async (req, res) => {
     sid, provider, providerUrl, destinationUrl, step,
     flowId: String(req.body?.flowId || '').slice(0, 160),
     createdAt: Date.now(),
-    minSeconds: Math.max(cfg.minSeconds, Number(req.body?.minSeconds || cfg.minSeconds)),
+    // Linkvertise relay completion must not be satisfiable by a short scripted request.
+    // Keep LootLabs behavior unchanged.
+    minSeconds: provider === 'linkvertise'
+      ? Math.max(20, Number(req.body?.minSeconds || cfg.minSeconds))
+      : Math.max(cfg.minSeconds, Number(req.body?.minSeconds || cfg.minSeconds)),
     binding: null, telemetry: null, status: 'pending',
     lootClickId: randomToken(18), turnstileVerified: false
   };
@@ -353,12 +357,10 @@ app.get('/v1/relay/linkvertise', async (req, res) => {
     });
   }
 
-  // The client telemetry request is sent immediately before navigating from
-  // the gateway page to Linkvertise. Slow/mobile connections can still have
-  // that request in flight when Linkvertise redirects back to this relay.
-  // Give it a short server-side grace window before treating it as missing.
+  // Give the immediately-following telemetry request enough time to arrive,
+  // but never treat a completely telemetry-free callback as a valid completion.
   if (!s.telemetry) {
-    for (let i = 0; i < 8 && !s.telemetry; i++) {
+    for (let i = 0; i < 20 && !s.telemetry; i++) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       const latest = await loadSession(req);
       if (latest.s && latest.ok && latest.s.status === 'pending') {
@@ -369,31 +371,18 @@ app.get('/v1/relay/linkvertise', async (req, res) => {
   }
 
   const server = serverRisk(req);
-  const clientTelemetryReady = Boolean(s.telemetry);
 
-  // If telemetry is still unavailable after the grace window, only permit
-  // a genuine top-level cross-site browser navigation. Direct address-bar
-  // hits and non-navigation requests remain blocked.
-  if (!clientTelemetryReady) {
-    const fetchSite = req.get('sec-fetch-site') || '';
-    const fetchMode = req.get('sec-fetch-mode') || '';
-    const fetchDest = req.get('sec-fetch-dest') || '';
-    const accept = req.get('accept') || '';
-    const normalProviderNavigation =
-      fetchSite === 'cross-site' &&
-      fetchMode === 'navigate' &&
-      fetchDest === 'document' &&
-      accept.toLowerCase().includes('text/html');
-
-    if (!normalProviderNavigation) {
-      return block(res, x.sid, s, 'missing_client_integrity', {
-        score: 100,
-        reasons: ['missing_client_integrity']
-      });
-    }
+  // A real browser must execute the challenge page and report telemetry.
+  // Do not allow a bot/API caller to turn a relay URL into a completion URL
+  // merely by waiting out the minimum-time timer.
+  if (!s.telemetry) {
+    return block(res, x.sid, s, 'missing_client_integrity', {
+      score: 100,
+      reasons: ['missing_client_integrity']
+    });
   }
 
-  const client = clientRisk(s.telemetry || {});
+  const client = clientRisk(s.telemetry);
   const d = decision({
     providerVerified: true,
     bindingOk: x.ok,
