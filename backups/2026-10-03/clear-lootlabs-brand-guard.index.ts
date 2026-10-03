@@ -1,0 +1,237 @@
+import { } from "https://deno.land/std@0.224.0/http/server.ts";
+
+const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") || "").trim().replace(/\/$/, "");
+
+function getSecret(name: string): string {
+  return (Deno.env.get(name) || "").trim();
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/") +
+    "=".repeat((4 - value.length % 4) % 4);
+  const binary = atob(normalized);
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+async function hmacSha256(secret: string, value: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(value),
+  );
+  return base64Url(new Uint8Array(signature));
+}
+
+async function verifyState(state: string): Promise<boolean> {
+  const secret = getSecret("LICENSE_SIGNING_SECRET");
+  if (secret.length < 32) return false;
+
+  const parts = state.split(".");
+  if (parts.length !== 2) return false;
+  const [body, signature] = parts;
+  if (signature !== await hmacSha256(secret, body)) return false;
+
+  try {
+    const payload = JSON.parse(
+      new TextDecoder().decode(decodeBase64Url(body)),
+    );
+    return (
+      (payload?.v === 4 || payload?.v === 5) &&
+      payload?.p === "lootlabs" &&
+      (payload?.stage === 1 || payload?.stage === 2) &&
+      typeof payload?.exp === "number" &&
+      payload.exp > Math.floor(Date.now() / 1000) &&
+      typeof payload?.n === "string" &&
+      payload.n.length >= 16
+    );
+  } catch {
+    return false;
+  }
+}
+
+function corsHeaders(req: Request): Headers {
+  const origin = req.headers.get("Origin") || "";
+  const allowed = origin === "https://clearb.space" ||
+    origin === "https://clearb.vercel.app" ||
+    origin === "https://loot-link.com" ||
+    origin === "https://lootdest.org";
+  return new Headers({
+    "Access-Control-Allow-Origin": allowed ? origin : "*",
+    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Vary": "Origin",
+  });
+}
+
+function brandingScript(): string {
+  return String.raw`(()=> {
+    "use strict";
+
+    const CLEAR_LOGO_URL = "https://res.cloudinary.com/wmmf7i3g/image/upload/v1788600863/Add_logo_to_background_2K_202609041942.jpg";
+    const CLEAR_LOGO_ATTR = "data-clear-brand-logo";
+
+    const normalize = (value) =>
+      String(value || "").replace(/\\s+/g, " ").trim();
+
+    const hide = (el) => {
+      if (el instanceof HTMLElement) {
+        el.style.setProperty("display", "none", "important");
+        el.setAttribute("aria-hidden", "true");
+      }
+    };
+
+    const isRedSquareBrandText = (text) => {
+      const t = normalize(text);
+      if (!t) return false;
+      return /(^|\\b)red[-\\s]?square(\\b|$)/i.test(t) ||
+        /protected\\s+by\\s+b\\.?y\\.?p\\.?a\\.?s\\.?s/i.test(t) ||
+        /red[-\\s]?square\\s+security/i.test(t) ||
+        /(^|\\b)b\\.?y\\.?p\\.?a\\.?s\\.?s(\\b|$)/i.test(t);
+    };
+
+    const isRedSquareBrandAsset = (el) => {
+      if (!(el instanceof Element)) return false;
+      const meta = [
+        el.getAttribute("src") || "",
+        el.getAttribute("alt") || "",
+        el.getAttribute("title") || "",
+        el.getAttribute("aria-label") || "",
+        el.getAttribute("id") || "",
+        el.getAttribute("class") || ""
+      ].join(" ");
+      return /red[-\\s]?square|b\\.?y\\.?p\\.?a\\.?s\\.?s/i.test(meta);
+    };
+
+    const addClearLogo = (host) => {
+      if (!(host instanceof HTMLElement)) return;
+      if (host.querySelector("img[" + CLEAR_LOGO_ATTR + "]")) return;
+
+      const logo = document.createElement("img");
+      logo.setAttribute(CLEAR_LOGO_ATTR, "1");
+      logo.src = CLEAR_LOGO_URL;
+      logo.alt = "Clear";
+      logo.title = "Clear";
+      logo.referrerPolicy = "no-referrer";
+      logo.decoding = "async";
+      logo.style.cssText =
+        "display:block!important;width:32px!important;height:32px!important;" +
+        "object-fit:cover!important;border-radius:6px!important;flex:none!important;";
+
+      host.insertBefore(logo, host.firstChild);
+    };
+
+    const clean = () => {
+      try {
+        const root = document.body || document.documentElement;
+        if (!root) return;
+
+        const all = Array.from(root.querySelectorAll("*"));
+
+        for (const el of all) {
+          if (!(el instanceof HTMLElement)) continue;
+
+          if (isRedSquareBrandAsset(el)) {
+            hide(el);
+            continue;
+          }
+
+          const text = normalize(el.innerText || "");
+          if (!text || text.length > 180) continue;
+
+          if (isRedSquareBrandText(text)) {
+            const parent = el.parentElement;
+
+            if (/red[-\\s]?square/i.test(text) && parent) {
+              for (const child of Array.from(parent.children)) {
+                if (child !== el && isRedSquareBrandAsset(child)) hide(child);
+              }
+              addClearLogo(parent);
+            }
+
+            hide(el);
+          }
+        }
+
+        // Remove any tiny attribution/footer block mentioning the old provider brand.
+        for (const el of all) {
+          if (!(el instanceof HTMLElement)) continue;
+          const text = normalize(el.innerText || "");
+          if (text && text.length <= 260 &&
+              (/red[-\\s]?square\\s+security/i.test(text) ||
+               /protected\\s+by\\s+b\\.?y\\.?p\\.?a\\.?s\\.?s/i.test(text))) {
+            hide(el);
+          }
+        }
+      } catch (_) {}
+    };
+
+    const boot = () => {
+      clean();
+      const observer = new MutationObserver(() => clean());
+      try {
+        observer.observe(document.documentElement, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeFilter: ["src", "alt", "title", "aria-label", "class", "id", "style"]
+        });
+      } catch (_) {}
+    };
+
+    if (document.documentElement) boot();
+    else document.addEventListener("DOMContentLoaded", boot, {once:true});
+  })();`;
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(req) });
+  }
+
+  const url = new URL(req.url);
+  const state = (url.searchParams.get("state") || "").trim();
+
+  if (req.method !== "GET") {
+    return new Response("/* method not allowed */", {
+      status: 405,
+      headers: new Headers({
+        ...Object.fromEntries(corsHeaders(req)),
+        "Content-Type": "application/javascript; charset=utf-8"
+      })
+    });
+  }
+
+  if (!state || !(await verifyState(state)) || !SUPABASE_URL) {
+    return new Response("/* invalid branding state */", {
+      status: 403,
+      headers: new Headers({
+        ...Object.fromEntries(corsHeaders(req)),
+        "Content-Type": "application/javascript; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      })
+    });
+  }
+
+  return new Response(brandingScript(), {
+    status: 200,
+    headers: new Headers({
+      ...Object.fromEntries(corsHeaders(req)),
+      "Content-Type": "application/javascript; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+    })
+  });
+});
